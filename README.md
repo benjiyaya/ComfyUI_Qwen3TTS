@@ -5,7 +5,6 @@ Custom Node for Text To Speech AI using Qwen 3 TTS series (0.6B/1.7B) based on Q
 https://github.com/QwenLM/Qwen3-TTS
 
 
-```markdown
 # ComfyUI-Qwen3TTS
 
 A ComfyUI custom node implementation for [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS). This node allows you to generate high-quality text-to-speech audio directly within ComfyUI, featuring support for Voice Design (text-based styling) and Custom Voice (audio cloning).
@@ -125,5 +124,5 @@ If you have configured `extra_model_paths.yaml`, the models will be saved to the
 
 ## License
 
-This project is licensed under the MIT License. Please note that the Qwen3-TTS models themselves have their own specific licenses which can be found on the HuggingFace model cards.
+This project is licensed under the Apache 2.0 License. Please note that the Qwen3-TTS models themselves have their own specific licenses which can be found on the HuggingFace model cards.
 ```
