@@ -5,6 +5,7 @@ import soundfile as sf
 import numpy as np
 import folder_paths
 from huggingface_hub import snapshot_download
+from transformers import BitsAndBytesConfig
 from qwen_tts import Qwen3TTSModel
 
 # Register the "Qwen3TTS" folder type
@@ -64,8 +65,9 @@ class Qwen3Loader:
                     "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
                     "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
                     "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
-                ], {"default": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice"}),
-                "precision": (["fp16", "bf16", "fp32"], {"default": "bf16"}),
+                ], {"default": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"}),
+                # Added "4-bit" option
+                "precision": (["4-bit", "fp16", "bf16", "fp32"], {"default": "bf16"}),
                 "attention": (["auto", "flash_attention_2", "sdpa", "eager"], {"default": "auto"}),
             }
         }
@@ -100,18 +102,48 @@ class Qwen3Loader:
             print(f"[Qwen3-TTS] Loading existing model from: {local_model_path}")
 
         device = "cuda" if torch.cuda.is_available() else "cpu"
-        
-        dtype = torch.float32
-        if precision == "bf16":
-            dtype = torch.bfloat16
-        elif precision == "fp16":
-            dtype = torch.float16
+
+        # Prepare arguments for from_pretrained
+        model_kwargs = {}
+        attn_impl = "sdpa"
+
+        # Handle 4-bit Quantization
+        if precision == "4-bit":
+            if device != "cuda":
+                raise EnvironmentError("4-bit quantization is only supported on CUDA (GPU).")
             
-        # Determine attention implementation
-        attn_impl = "sdpa" 
-        
+            try:
+                import bitsandbytes as bnb
+                import importlib.metadata
+                importlib.metadata.version("bitsandbytes")
+            except ImportError:
+                raise ModuleNotFoundError(
+                    "4-bit quantization requires 'bitsandbytes'. "
+                    "Please install it (e.g., pip install bitsandbytes)."
+                )
+
+            print(f"[Qwen3-TTS] Loading model in 4-bit (NF4) quantization...")
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16, # Compute dtype for 4-bit
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+            model_kwargs["quantization_config"] = bnb_config
+            model_kwargs["device_map"] = "auto" # Required for 4-bit usually
+        else:
+            # Handle Standard Precision (fp16, bf16, fp32)
+            dtype = torch.float32
+            if precision == "bf16":
+                dtype = torch.bfloat16
+            elif precision == "fp16":
+                dtype = torch.float16
+            
+            model_kwargs["dtype"] = dtype
+            model_kwargs["device_map"] = device
+
+        # Handle Attention Implementation
         if attention == "flash_attention_2":
-            # Explicit check for flash_attn installation
             try:
                 import flash_attn
                 import importlib.metadata
@@ -119,30 +151,27 @@ class Qwen3Loader:
                 attn_impl = "flash_attention_2"
             except ImportError:
                 raise ModuleNotFoundError(
-                    print(f"Flash Attention 2 is selected, but it is not installed.")
+                    "Flash Attention 2 is selected, but 'flash_attn' is not installed. "
+                    "Please install it to use this attention implementation."
                 )
         elif attention == "auto":
-            # Auto-detect
             try:
                 import flash_attn
                 import importlib.metadata
                 importlib.metadata.version("flash_attn")
                 attn_impl = "flash_attention_2"
             except Exception:
-                # Fallback to sdpa if flash_attn missing or metadata broken
-                print(f"Flash Attention is selected, but it is not installed.")
                 attn_impl = "sdpa"
         else:
-            # Use whatever user specified (sdpa or eager)
             attn_impl = attention
 
-        print(f"[Qwen3-TTS] Device: {device}, Precision: {dtype}, Attention: {attn_impl}")
+        model_kwargs["attn_implementation"] = attn_impl
+        
+        print(f"[Qwen3-TTS] Loading with config: Precision={precision}, Attention={attn_impl}, Device={device}")
 
         model = Qwen3TTSModel.from_pretrained(
             local_model_path,
-            device_map=device,
-            dtype=dtype,
-            attn_implementation=attn_impl
+            **model_kwargs
         )
         
         return (model,)
