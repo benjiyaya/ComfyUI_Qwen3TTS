@@ -1,0 +1,295 @@
+import os
+import torch
+import soundfile as sf
+import numpy as np
+import folder_paths
+from huggingface_hub import snapshot_download
+from qwen_tts import Qwen3TTSModel
+
+def convert_audio(wav, sr):
+    
+    if isinstance(wav, np.ndarray):
+        wav = torch.from_numpy(wav)
+    
+    if wav.dim() == 1:
+        wav = wav.unsqueeze(0) # (1, samples) (channels=1)
+    
+
+    if wav.shape[0] > wav.shape[1]: 
+        # assume (samples, channels) - verify this assumption
+        wav = wav.transpose(0, 1)
+        
+
+    wav = wav.unsqueeze(0) # (1, channels, samples)
+    
+    return {"waveform": wav, "sample_rate": sr}
+
+def load_audio_input(audio_input):
+
+    if audio_input is None:
+        return None
+        
+    waveform = audio_input["waveform"]
+    sr = audio_input["sample_rate"]
+    
+    wav = waveform[0] # (channels, samples)
+
+    if wav.shape[0] > 1:
+        wav = torch.mean(wav, dim=0) # Mix to mono
+    else:
+        wav = wav.squeeze(0) # (samples,)
+        
+    return (wav.numpy(), sr)
+
+
+class Qwen3Loader:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "repo_id": ([
+                    "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
+                    "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
+                    "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
+                    "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+                    "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+                ], {"default": "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice"}),
+                "precision": (["fp16", "bf16", "fp32"], {"default": "bf16"}),
+                "attention": (["auto", "flash_attention_2", "sdpa", "eager"], {"default": "auto"}),
+            }
+        }
+
+    RETURN_TYPES = ("QWEN3_MODEL",)
+    RETURN_NAMES = ("model",)
+    FUNCTION = "load_model"
+    CATEGORY = "Qwen3-TTS"
+
+    def load_model(self, repo_id, precision, attention):
+        # 1. Determine local model directory
+        base_dir = folder_paths.base_path
+        models_dir = os.path.join(base_dir, "models", "Qwen3TTS")
+        
+        # Create the specific subfolder for this repo_id to avoid conflicts
+        # e.g., ComfyUI/models/Qwen3TTS/Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice
+        local_model_path = os.path.join(models_dir, repo_id)
+
+        # 2. Check existence and Download if necessary
+        # We check for 'config.json' or 'model.safetensors' to verify a valid download
+        config_file = os.path.join(local_model_path, "config.json")
+        
+        if not os.path.exists(config_file):
+            print(f"[Qwen3-TTS] Model not found at {local_model_path}. Downloading from HuggingFace...")
+            try:
+                os.makedirs(local_model_path, exist_ok=True)
+                snapshot_download(
+                    repo_id=repo_id,
+                    local_dir=local_model_path,
+                    local_dir_use_symlinks=False, # Copy files directly for portability
+                    resume_download=True
+                )
+                print(f"[Qwen3-TTS] Download complete: {local_model_path}")
+            except Exception as e:
+                raise Exception(f"[Qwen3-TTS] Failed to download model: {e}")
+        else:
+            print(f"[Qwen3-TTS] Loading existing model from: {local_model_path}")
+
+        # 3. Load the Model
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        
+        dtype = torch.float32
+        if precision == "bf16":
+            dtype = torch.bfloat16
+        elif precision == "fp16":
+            dtype = torch.float16
+            
+        # Determine attention implementation
+        attn_impl = "sdpa" # Default to sdpa
+        
+        if attention != "auto":
+            attn_impl = attention
+        else:
+            # Auto-detect
+            try:
+                import flash_attn
+                import importlib.metadata
+                importlib.metadata.version("flash_attn")
+                attn_impl = "flash_attention_2"
+            except Exception:
+                attn_impl = "sdpa"
+
+        print(f"[Qwen3-TTS] Device: {device}, Precision: {dtype}, Attention: {attn_impl}")
+
+        # Load from the local path calculated above
+        model = Qwen3TTSModel.from_pretrained(
+            local_model_path,
+            device_map=device,
+            dtype=dtype,
+            attn_implementation=attn_impl
+        )
+        
+        return (model,)
+
+
+class Qwen3CustomVoice:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("QWEN3_MODEL",),
+                "text": ("STRING", {"multiline": True}),
+                "language": ([
+                    "Auto", "Chinese", "English", "Japanese", "Korean", "German", 
+                    "French", "Russian", "Portuguese", "Spanish", "Italian"
+                ], {"default": "Auto"}),
+                "speaker": ([
+                    "Vivian", "Serena", "Uncle_Fu", "Dylan", "Eric", 
+                    "Ryan", "Aiden", "Ono_Anna", "Sohee"
+                ], {"default": "Vivian"}),
+            },
+            "optional": {
+                "instruct": ("STRING", {"multiline": True, "default": ""}),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO",)
+    FUNCTION = "generate"
+    CATEGORY = "Qwen3-TTS"
+
+    def generate(self, model, text, language, speaker, instruct=""):
+        lang = language if language != "Auto" else None
+        inst = instruct if instruct.strip() != "" else None
+        
+        wavs, sr = model.generate_custom_voice(
+            text=text,
+            language=lang,
+            speaker=speaker,
+            instruct=inst
+        )
+        # wavs is a list of numpy arrays (batch size 1 here)
+        return (convert_audio(wavs[0], sr),)
+
+
+class Qwen3VoiceDesign:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("QWEN3_MODEL",),
+                "text": ("STRING", {"multiline": True}),
+                "instruct": ("STRING", {"multiline": True}),
+                "language": ([
+                    "Auto", "Chinese", "English", "Japanese", "Korean", "German", 
+                    "French", "Russian", "Portuguese", "Spanish", "Italian"
+                ], {"default": "Auto"}),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO",)
+    FUNCTION = "generate"
+    CATEGORY = "Qwen3-TTS"
+
+    def generate(self, model, text, instruct, language):
+        lang = language if language != "Auto" else None
+        
+        wavs, sr = model.generate_voice_design(
+            text=text,
+            language=lang,
+            instruct=instruct
+        )
+        return (convert_audio(wavs[0], sr),)
+
+
+class Qwen3PromptMaker:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("QWEN3_MODEL",),
+                "ref_audio": ("AUDIO",),
+                "ref_text": ("STRING", {"multiline": True}),
+            }
+        }
+
+    RETURN_TYPES = ("QWEN3_PROMPT",)
+    FUNCTION = "create_prompt"
+    CATEGORY = "Qwen3-TTS"
+
+    def create_prompt(self, model, ref_audio, ref_text):
+        audio_tuple = load_audio_input(ref_audio)
+        
+        prompt = model.create_voice_clone_prompt(
+            ref_audio=audio_tuple,
+            ref_text=ref_text
+        )
+        return (prompt,)
+
+
+class Qwen3VoiceClone:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("QWEN3_MODEL",),
+                "text": ("STRING", {"multiline": True}),
+            },
+            "optional": {
+                "language": ([
+                    "Auto", "Chinese", "English", "Japanese", "Korean", "German", 
+                    "French", "Russian", "Portuguese", "Spanish", "Italian"
+                ], {"default": "Auto"}),
+                "ref_audio": ("AUDIO",),
+                "ref_text": ("STRING", {"multiline": True}),
+                "prompt": ("QWEN3_PROMPT",),
+            }
+        }
+
+    RETURN_TYPES = ("AUDIO",)
+    FUNCTION = "generate"
+    CATEGORY = "Qwen3-TTS"
+
+    def generate(self, model, text, language="Auto", ref_audio=None, ref_text=None, prompt=None):
+        lang = language if language != "Auto" else None
+        
+        wavs = None
+        sr = 0
+        
+        if prompt is not None:
+            # Use pre-calculated prompt
+            wavs, sr = model.generate_voice_clone(
+                text=text,
+                language=lang,
+                voice_clone_prompt=prompt
+            )
+        elif ref_audio is not None and ref_text is not None and ref_text.strip() != "":
+            # Use on-the-fly prompt creation
+            audio_tuple = load_audio_input(ref_audio)
+            wavs, sr = model.generate_voice_clone(
+                text=text,
+                language=lang,
+                ref_audio=audio_tuple,
+                ref_text=ref_text
+            )
+        else:
+             raise ValueError("For Voice Clone, you must provide either 'prompt' OR ('ref_audio' AND 'ref_text').")
+             
+        return (convert_audio(wavs[0], sr),)
+    
+
+
+NODE_CLASS_MAPPINGS = {
+    "Qwen3Loader": Qwen3Loader,
+    "Qwen3CustomVoice": Qwen3CustomVoice,
+    "Qwen3VoiceDesign": Qwen3VoiceDesign,
+    "Qwen3VoiceClone": Qwen3VoiceClone,
+    "Qwen3PromptMaker": Qwen3PromptMaker
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "Qwen3Loader": "Qwen3-TTS Loader",
+    "Qwen3CustomVoice": "Qwen3-TTS Custom Voice",
+    "Qwen3VoiceDesign": "Qwen3-TTS Voice Design",
+    "Qwen3VoiceClone": "Qwen3-TTS Voice Clone",
+    "Qwen3PromptMaker": "Qwen3-TTS Prompt Maker"
+}
+
+__all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS"]
