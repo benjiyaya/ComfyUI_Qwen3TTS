@@ -75,38 +75,7 @@ Loads the Qwen3-TTS model and processor from HuggingFace or local disk. Supports
 **Outputs:**
 *   `model`: The loaded model object.
 
-### 2. Qwen3-TTS Tokenizer (New)
-
-Converts raw audio waveforms into discrete audio codes (Tokens).
-
-**Inputs:**
-*   **model**: Connected from Model Loader.
-*   **audio**: Input audio (e.g., a voice sample).
-
-**Outputs:**
-*   `codes`: Discrete tensor representation of the audio.
-
-**Use Case:**
-*   Extracting features from a voice sample before generation.
-*   Inspecting the latent representation of audio.
-*   Can be piped into the Reconstruction node to test the encode/decode loop.
-
-### 3. Qwen3-TTS Reconstruction (New)
-
-Reconstructs audio waveforms from discrete codes (Vocoder step).
-
-**Inputs:**
-*   **model**: Connected from Model Loader.
-*   **codes**: Discrete tensor codes (from Tokenizer or manual generation).
-
-**Outputs:**
-*   `AUDIO`: Standard ComfyUI audio dictionary.
-
-**Use Case:**
-*   Re-synthesizing audio from tokens.
-*   Verifying the quality of the audio encoder/decoder loop.
-
-### 4. Qwen3-TTS Sampler
+### 2. Qwen3-TTS Sampler
 
 Generates audio from the loaded model using Text, Instructions, or Reference Audio.
 
